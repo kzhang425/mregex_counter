@@ -34,8 +34,18 @@ impl Engine {
     }
 
     #[inline]
+    pub fn input_string_len(&self) -> usize {
+        self.get_input_string().len()
+    }
+
+    #[inline]
     pub fn get_states(&self) -> &Vec<State> {
         &self.states
+    }
+
+    #[inline]
+    pub fn get_states_mut(&mut self) -> &mut Vec<State> {
+        &mut self.states
     }
 
     #[inline]
@@ -124,6 +134,51 @@ impl Engine {
         (*self.get_counts_mut(), *self.get_cur_pos_mut()) = cache.extract();
     }
 
+    fn cache_consume_non_dropping(&mut self, cache: &Cache) {
+        self.cache_consume(cache.clone());
+    }
+
+    /// Called when handling a block
+    fn expand_block_state(&mut self, multiplicity: usize) -> Result<(), &'static str> {
+        if let Some(state) = self.get_current_state() {
+            // Some sanity checks
+            if !state.is_block_type() {
+                return Err("The state is not of a block type.");
+            }
+
+            if !state.within_count(multiplicity) {
+                return Err("Multiplicity is not valid.");
+            }
+
+            // Else, let's go ahead and do this
+            let current_index = self.get_counts().len() - 1;
+            let mut new_states = Vec::from(&self.get_states()[0..current_index]);
+
+            let remaining_i = if current_index >= (self.get_states().len() - 1) {
+                current_index
+            } else {
+                current_index + 1
+            };
+            let mut remaining_states = Vec::from(&self.get_states()[(remaining_i)..self.get_states().len()]);
+            let repr_states = state.expand_block_states().unwrap();
+
+            for i in 0..multiplicity {
+                new_states.append(&mut repr_states.clone())
+            }
+
+            // Now cap the end again.
+            new_states.append(&mut remaining_states);
+
+            *self.get_states_mut() = new_states;
+
+
+            Ok(())
+
+        } else {
+            Err("Passed in a null state to expand_block_state.")
+        }
+    }
+
     //          $$---------- HELPER FUNCTION SECTION END ----------$$
     // --------------------------------------------------------------------------------------------------------------------------------------
     //          $$----------CORE ALGORITHM SECTION START ----------$$
@@ -148,7 +203,7 @@ impl Engine {
         
     }
 
-    pub fn execute(&mut self) -> Result<bool, &'static str> {
+    fn execute(&mut self) -> Result<bool, &'static str> {
         let mut can_qualify_next_state: bool;
         let mut can_qualify_now: bool;
         let mut can_skip_next: bool;
@@ -167,6 +222,28 @@ impl Engine {
                 }
             };
             is_last_state = self.get_next_state().is_none();
+
+            // Block cases are unique, and should be handled foremost. If we hit here, its most likely we handle true/false here.
+            if can_qualify_now && self.get_current_state().unwrap().is_block_type() {
+                let cache = self.cache_generate();
+                let block_state = self.get_current_state().unwrap();
+                let state_upper_lim = block_state.get_max().unwrap_or(crate::BLOCK_TRUE_UPPER_LIM);
+                let calc_loop_lim = self.input_string_len() / block_state.block_size().unwrap();
+
+                for i in block_state.get_min()..calc_loop_lim.min(state_upper_lim) {
+                    self.cache_consume_non_dropping(&cache); // reset
+                    self.expand_block_state(i)?;
+
+                    let result = self.execute()?;
+                    if result {
+                        return Ok(true);
+                    }
+                }
+
+                // If none of the stuff work above, we simply can't pass
+                return Ok(false);
+
+            }
 
             // Easy case, if you can't qualify now but can qualify on the next state, do that. We account for possibility that 
             // the next state doesn't exist in can_qualify_next_state
@@ -196,7 +273,7 @@ impl Engine {
 
             // Easiest case would be if the character can qualify now, but not later.
             if can_qualify_now && !can_qualify_next_state {
-                self.add_current_count();
+                self.add_current_count()?;
                 if is_last_state && self.cursor_is_at_end() {
                     self.finish();
                 } else {
@@ -265,6 +342,7 @@ impl Engine {
 
         // We also assume that the last element of the counts field corresponds to the current state we're evaluating this character for.
         let state = self.get_current_state().ok_or("Failed to retrieve state based on curent counts information.")?;
+
         if !state.does_char_qualify(cur_char) {
             // Basically just not what the state expects, quit early here.
             Ok(false)

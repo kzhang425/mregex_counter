@@ -1,5 +1,6 @@
 
 /// Used by the engine to cache where it is at a certain point in the algorithm.
+#[derive(Clone)]
 pub struct Cache {
     counts: Vec<usize>,
     cur_pos: usize,
