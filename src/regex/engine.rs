@@ -154,15 +154,15 @@ impl Engine {
             let current_index = self.get_counts().len() - 1;
             let mut new_states = Vec::from(&self.get_states()[0..current_index]);
 
-            let remaining_i = if current_index >= (self.get_states().len() - 1) {
-                current_index
+            
+            let mut remaining_states = if current_index >= (self.get_states().len() - 1) {
+                Vec::new()
             } else {
-                current_index + 1
+                Vec::from(&self.get_states()[(current_index + 1)..self.get_states().len()])
             };
-            let mut remaining_states = Vec::from(&self.get_states()[(remaining_i)..self.get_states().len()]);
             let repr_states = state.expand_block_states().unwrap();
 
-            for i in 0..multiplicity {
+            for _i in 0..multiplicity {
                 new_states.append(&mut repr_states.clone())
             }
 
