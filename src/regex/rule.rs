@@ -1,4 +1,4 @@
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum PatternType {
     Alphabetic,
     Numeric,
@@ -18,7 +18,7 @@ impl PatternType {
             }
 
             Self::Numeric => {
-                if character.is_numeric() {
+                if character.is_digit(10) {
                     return true;
                 } else {
                     return false;
@@ -40,36 +40,68 @@ impl PatternType {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct State {
+    identifier: usize,
     min: usize,
     max: Option<usize>,
     patterns: Vec<PatternType>, // The aim of this is to provide some OR functionality.
     block: Option<Vec<State>>,
+    coalesce: bool,
 }
 
 impl State {
     /// Creates a new State object. This cannot create a block type state.
     pub fn new(min: usize, max: Option<usize>, patterns: Vec<PatternType>) -> Self {
         Self {
+            identifier: 0,
             min,
             max,
             patterns,
             block: None,
+            coalesce: false,
         }
     }
 
     pub fn new_block(min: usize, max: Option<usize>, states: Vec<State>) -> Self {
         Self {
+            identifier: 0,
             min,
             max,
             patterns: Vec::new(),
             block: Some(states),
+            coalesce: false,
         }
+    }
+
+    pub fn new_coalesce_block(min: usize, max: Option<usize>, states: Vec<State>) -> Self {
+        let mut output = Self::new_block(min, max, states);
+        output.coalesce = true;
+        output
+    }
+
+    pub fn nth_coalesce_option(&self, n: usize) -> Result<State, &'static str> {
+        if n >= self.block_size().ok_or("Not a valid block type state.")? {
+            Err("Invalid indices.")
+        } else {
+            let only_state = self.get_block_states().unwrap()[n].clone();
+            Ok(Self::new_block(self.get_min(), self.get_max(), vec![only_state]))
+
+        }
+    }
+
+    /// Useful when dealing with categorizing states when constructing a parser.
+    pub fn set_identifier(mut self, new_value: usize) -> Self {
+        self.identifier = new_value;
+        self
     }
 
     pub fn is_block_type(&self) -> bool {
         self.block.is_some()
+    }
+
+    pub fn is_coalesce(&self) -> bool {
+        self.coalesce
     }
 
     pub fn get_max(&self) -> Option<usize> {
@@ -110,6 +142,9 @@ impl State {
 
             // Otherwise, we can start checking. 
             let block_vec = block_vec_opt.unwrap();
+            if block_vec.len() == 0 {
+                return false; // Why even bother, this is incorrect form.
+            }
             for state in block_vec.iter() {
                 let check_result = state.does_char_qualify(character);
                 if !state.allows_skip() {
@@ -164,5 +199,17 @@ impl State {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_block() {
+        let vec_states = vec![State::new(1, Some(1), vec![PatternType::Numeric]), State::new(1, Some(1), vec![PatternType::Alphabetic])];
+        let block_state = State::new_block(1, Some(2), vec_states);
+        assert_eq!(block_state.does_char_qualify('1'), true);
     }
 }

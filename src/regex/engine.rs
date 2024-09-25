@@ -122,16 +122,22 @@ impl Engine {
     }
 
     #[inline]
+    pub fn get_current_state_mut(&mut self) -> Option<&mut State> {
+        let index = self.get_counts().len() - 1;
+        self.get_states_mut().get_mut(index)
+    }
+
+    #[inline]
     pub fn get_next_state(&self) -> Option<&State> {
         self.get_states().get(self.get_counts().len())
     }
 
     fn cache_generate(&self) -> Cache {
-        Cache::new(self.get_counts().clone(), self.get_cur_pos())
+        Cache::new(self.get_counts().clone(), self.get_cur_pos(), self.get_states().clone())
     }
 
     fn cache_consume(&mut self, cache: Cache) {
-        (*self.get_counts_mut(), *self.get_cur_pos_mut()) = cache.extract();
+        (*self.get_counts_mut(), *self.get_cur_pos_mut(), *self.get_states_mut()) = cache.extract();
     }
 
     fn cache_consume_non_dropping(&mut self, cache: &Cache) {
@@ -179,6 +185,11 @@ impl Engine {
         }
     }
 
+    fn replace_state(&mut self, state: State) {
+        let current_index = self.get_states().len() - 1;
+        self.get_states_mut()[current_index] = state;
+    }
+
     //          $$---------- HELPER FUNCTION SECTION END ----------$$
     // --------------------------------------------------------------------------------------------------------------------------------------
     //          $$----------CORE ALGORITHM SECTION START ----------$$
@@ -201,6 +212,22 @@ impl Engine {
         self.init()?; // If fail initialization, don't bother continuing.
         self.execute()
         
+    }
+
+    pub fn extract_results(&self) -> Option<Vec<(State, String)>> {
+        if !self.is_finished() {
+            return None;
+        }
+
+        let mut output = Vec::new();
+        let mut pos: usize = 0;
+        for entry in self.get_states().iter().zip(self.get_counts()) {
+            let new = pos + entry.1;
+            output.push((entry.0.clone(), self.get_input_string()[pos..new].to_string()));
+            pos = new;
+        }
+
+        Some(output)
     }
 
     fn execute(&mut self) -> Result<bool, &'static str> {
@@ -226,11 +253,26 @@ impl Engine {
             // Block cases are unique, and should be handled foremost. If we hit here, its most likely we handle true/false here.
             if can_qualify_now && self.get_current_state().unwrap().is_block_type() {
                 let cache = self.cache_generate();
+                // If the block is a coalesce, then it's easier
+                if self.get_current_state().unwrap().is_coalesce() {
+                    let lim = self.get_current_state().unwrap().block_size().unwrap();
+                    for i in 0..lim {
+                        self.cache_consume_non_dropping(&cache); // reset
+                        let c_option = self.get_current_state().unwrap().nth_coalesce_option(i)?;
+                        self.replace_state(c_option);
+
+                        let result = self.execute()?;
+                        if result {
+                            return Ok(true);
+                        }
+                    }
+                    return Ok(false);
+                }
+
                 let block_state = self.get_current_state().unwrap();
                 let state_upper_lim = block_state.get_max().unwrap_or(crate::BLOCK_TRUE_UPPER_LIM);
-                let calc_loop_lim = self.input_string_len() / block_state.block_size().unwrap();
 
-                for i in block_state.get_min()..calc_loop_lim.min(state_upper_lim) {
+                for i in block_state.get_min()..=state_upper_lim {
                     self.cache_consume_non_dropping(&cache); // reset
                     self.expand_block_state(i)?;
 
@@ -248,14 +290,12 @@ impl Engine {
             // Easy case, if you can't qualify now but can qualify on the next state, do that. We account for possibility that 
             // the next state doesn't exist in can_qualify_next_state
             if !can_qualify_now && can_qualify_next_state {
-                self.advance_state();
-                self.add_current_count()?;
-                continue;
+                self.advance_state(); // Just let the next iteration of the loop handle the increment
+                // self.add_current_count()?; // This was causing issues all along.
             }
 
             if !can_qualify_now && !can_qualify_next_state {
                 // Break down into two cases, one where you can skip the next state and one you can't.
-
                 // If you can't:
                 if !can_skip_next {
                     return Ok(false); // out of options.
@@ -309,7 +349,7 @@ impl Engine {
             return false;
         }
 
-        for i in (0..self.get_counts().len()) {
+        for i in 0..self.get_counts().len() {
             if !self.get_states()[i].within_count(self.get_counts()[i]) {
                 return false;
             }
@@ -338,7 +378,7 @@ impl Engine {
 
     /// Checks if the current pointer character can qualify for the bound in the state.
     fn evaluate_char_with_limits(&self) -> Result<bool, &'static str> {
-        let cur_char = self.get_input_string().chars().nth(self.get_cur_pos()).ok_or("Failed to get current character or out of bounds")?;
+        let cur_char = self.get_cur_char().ok_or("Failed to get current character or out of bounds")?;
 
         // We also assume that the last element of the counts field corresponds to the current state we're evaluating this character for.
         let state = self.get_current_state().ok_or("Failed to retrieve state based on curent counts information.")?;
@@ -370,5 +410,34 @@ mod tests {
         let mut engine = Engine::new("abcde".to_string(), alphabet_rule);
         let result = engine.process().unwrap();
         assert_eq!(result, false);
+    }
+
+    #[test]
+    fn more_complex() {
+        let mut block_stuff = Vec::new();
+        block_stuff.push(State::new(1, Some(1), vec![PatternType::Numeric]));
+        block_stuff.push(State::new(1, Some(1), vec![PatternType::Specific('.')]));
+        block_stuff.push(State::new(1, Some(1), vec![PatternType::Numeric]));
+        block_stuff.push(State::new(1, None, vec![PatternType::Alphabetic]));
+        let state = State::new_block(1, None, block_stuff);
+
+        let mut engine = Engine::new("1.2A3.4B".to_string(), vec![state]);
+        let results = engine.process();
+        assert_eq!(results.is_ok(), true);
+    }
+
+    #[test]
+    fn test_coalesce_functionality() {
+        let mut block_stuff = Vec::new();
+        block_stuff.push(State::new(1, Some(2), vec![PatternType::Alphabetic]));
+        block_stuff.push(State::new(1, Some(2), vec![PatternType::Numeric]));
+        let state = State::new_coalesce_block(1, Some(5), block_stuff);
+
+        let mut engine = Engine::new("ABAB12".to_string(), vec![state]);
+        let results = engine.process();
+        assert_eq!(results.is_ok(), true);
+        assert_eq!(results.unwrap(), false);
+
+
     }
 }
